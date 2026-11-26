@@ -1,0 +1,75 @@
+#include "ui/menudef.h"
+#include "ui/menumacros.h"
+
+// Defines //
+#define GROUP_NAME	"grpPopupServerRedirect"
+
+// Redirect Popup //
+menuDef {
+	name		"popupServerRedirect"
+	visible		0
+	fullscreen	1
+	rect		FULL_WINDOW_X FULL_WINDOW_Y FULL_WINDOW_WIDTH FULL_WINDOW_HEIGHT
+	style		WINDOW_STYLE_FILLED
+	popup
+
+	fadeClamp	0.5
+	fadeAmount  0.075
+
+	onOpen {
+		close fadebox_black ;
+		close background_1 ;
+		close backgroundmusic ;
+		close main ;
+		uiScript ServerStatus_diagnose ;
+		setitemcolor background backcolor 0 0 0 0 ;
+		fadein background ;
+		playlooped "sound/music/menu_server.wav"
+	}
+
+	onESC {
+		uiScript clearError ;
+		close popupServerRedirect ;
+		open main
+	}
+
+	onEnter	{
+		close popupServerRedirect ;
+		uiScript redirect
+	}
+
+// Background //
+	itemDef {
+		name		"loadPanel"
+		rect		0 0 640 480
+		type		ITEM_TYPE_OWNERDRAW
+		ownerdraw	UI_LOADPANEL
+		visible		1
+		decoration
+	}
+
+	itemDef {
+		name		"background"
+		rect		0 0 640 480
+		style		WINDOW_STYLE_FILLED
+		background	"ui/assets/fadebox.tga"
+		backcolor	0 0 0 0
+		visible		1
+		decoration
+	}
+
+// Subwindows //
+#define SUBFULL_WINDOW_WIDTH		256
+#define SUBFULL_WINDOW_HEIGHT	64
+#define SUBFULL_WINDOW_X			.5*(FULL_WINDOW_WIDTH-SUBFULL_WINDOW_WIDTH)
+#define SUBFULL_WINDOW_Y			.5*(FULL_WINDOW_HEIGHT-SUBFULL_WINDOW_HEIGHT)
+
+	SUBWINDOWBLACK( SUBFULL_WINDOW_X, SUBFULL_WINDOW_Y, SUBFULL_WINDOW_WIDTH, SUBFULL_WINDOW_HEIGHT, _("REDIRECTION ADVISED") )
+
+	LABEL( (SUBFULL_WINDOW_X+4)+26+6, SUBFULL_WINDOW_Y+16, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Do you want to redirect to:"), .2, ITEM_ALIGN_LEFT, 0, 8 )
+	CVARLABEL( (SUBFULL_WINDOW_X+4)+26+6, SUBFULL_WINDOW_Y+26, (SUBFULL_WINDOW_WIDTH)-8-56-6, 10, "com_errorMessage", .2, ITEM_ALIGN_LEFT, 0, 8 )
+
+	BUTTON( SUBFULL_WINDOW_X+6, SUBFULL_WINDOW_Y+SUBFULL_WINDOW_HEIGHT-24, .30*(SUBFULL_WINDOW_WIDTH-18), 18, _("MSGID_MENU_NO"), .3, 14, uiScript clearError ; close popupServerRedirect ; open main_opener )
+	BUTTON( SUBFULL_WINDOW_X+6+.30*(SUBFULL_WINDOW_WIDTH-18)+6, SUBFULL_WINDOW_Y+SUBFULL_WINDOW_HEIGHT-24, .30*(SUBFULL_WINDOW_WIDTH-18), 18, _("MSGID_MENU_YES"), .3, 14, close popupServerRedirect ; uiScript redirect )
+	BUTTON( SUBFULL_WINDOW_X+6+.30*(SUBFULL_WINDOW_WIDTH-18)+6+.30*(SUBFULL_WINDOW_WIDTH-18)+6, SUBFULL_WINDOW_Y+SUBFULL_WINDOW_HEIGHT-24, .38*(SUBFULL_WINDOW_WIDTH-18), 18, _("RECONNECT"), .3, 14, close popupServerRedirect ; uiScript reconnect )
+}

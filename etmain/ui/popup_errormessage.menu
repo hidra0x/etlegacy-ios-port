@@ -1,0 +1,56 @@
+#include "ui/menudef.h"
+#include "ui/menumacros.h"
+
+// Defines //
+#define GROUP_NAME	"grpPopupError_pbenable"
+
+// Error Popup //
+menuDef {
+	name		"popupError_pbenable"
+	visible		0
+	fullscreen	0
+	rect		FULL_WINDOW_X FULL_WINDOW_Y FULL_WINDOW_WIDTH FULL_WINDOW_HEIGHT
+	style		WINDOW_STYLE_FILLED
+	popup
+
+	fadeClamp	0.5
+	fadeAmount  0.075
+
+	onOpen {
+		uiScript ServerStatus_diagnose ;
+		setitemcolor background backcolor 0 0 0 0 ;
+		fadein background
+	}
+
+	onESC {
+		uiScript clearError ;
+		close popupError_pbenable ;
+		open main
+	}
+
+// Background //
+	itemDef {
+		name		"background"
+		rect		0 0 FULL_WINDOW_WIDTH 480
+		style		WINDOW_STYLE_FILLED
+		background	"ui/assets/fadebox.tga"
+		backcolor	0 0 0 0
+		visible		1
+		decoration
+	}
+
+// Subwindows //
+#define SUBFULL_WINDOW_WIDTH		256
+#define SUBFULL_WINDOW_HEIGHT	192
+#define SUBFULL_WINDOW_X			.5*(FULL_WINDOW_WIDTH-SUBFULL_WINDOW_WIDTH)
+#define SUBFULL_WINDOW_Y			.5*(FULL_WINDOW_HEIGHT-SUBFULL_WINDOW_HEIGHT)
+
+	SUBWINDOWBLACK( SUBFULL_WINDOW_X, SUBFULL_WINDOW_Y, SUBFULL_WINDOW_WIDTH, SUBFULL_WINDOW_HEIGHT, _("ERROR") )
+
+	CVARLABEL( SUBFULL_WINDOW_X+6, SUBFULL_WINDOW_Y+16, (SUBFULL_WINDOW_WIDTH)-12, 132, "com_errorMessage", .2, ITEM_ALIGN_LEFT, 0, 8 )
+
+	// FIXME: Add message we'll never support pb
+	// NAMEDBUTTON( "bttn_pbenable", SUBFULL_WINDOW_X+6, SUBFULL_WINDOW_Y+SUBFULL_WINDOW_HEIGHT-46, (SUBFULL_WINDOW_WIDTH-12), 18, "ENABLE PUNKBUSTER", .3, 14, clearFocus ; open playonline_enablepb )
+	BUTTON( SUBFULL_WINDOW_X+6, SUBFULL_WINDOW_Y+SUBFULL_WINDOW_HEIGHT-24, .5*(SUBFULL_WINDOW_WIDTH-18), 18, _("MSGID_MENU_BACK"), .3, 14, uiScript clearError ; close popupError_pbenable ; open main )
+	BUTTON( SUBFULL_WINDOW_X+6+.5*(SUBFULL_WINDOW_WIDTH-18)+6, SUBFULL_WINDOW_Y+SUBFULL_WINDOW_HEIGHT-24, .5*(SUBFULL_WINDOW_WIDTH-18), 18, _("RECONNECT"), .3, 14, uiScript clearError ; close popupError_pbenable ; close backgroundmusic ; close background_1 ; uiScript reconnect )
+}

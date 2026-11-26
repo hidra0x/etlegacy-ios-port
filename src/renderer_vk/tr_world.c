@@ -1,0 +1,1452 @@
+/*
+ * Wolfenstein: Enemy Territory GPL Source Code
+ * Copyright (C) 1999-2010 id Software LLC, a ZeniMax Media company.
+ *
+ * ET: Legacy
+ * Copyright (C) 2012-2024 ET:Legacy team <mail@etlegacy.com>
+ *
+ * This file is part of ET: Legacy - http://www.etlegacy.com
+ *
+ * ET: Legacy is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * ET: Legacy is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with ET: Legacy. If not, see <http://www.gnu.org/licenses/>.
+ *
+ * In addition, Wolfenstein: Enemy Territory GPL Source Code is also
+ * subject to certain additional terms. You should have received a copy
+ * of these additional terms immediately following the terms and conditions
+ * of the GNU General Public License which accompanied the source code.
+ * If not, please request a copy in writing from id Software at the address below.
+ *
+ * id Software LLC, c/o ZeniMax Media Inc., Suite 120, Rockville, Maryland 20850 USA.
+ */
+/**
+ * @file renderer/tr_world.c
+ */
+
+#include "tr_local.h"
+
+/**
+ * @brief Tries to back face cull surfaces before they are lighted or
+ * added to the sorting list.
+ *
+ * This will also allow mirrors on both sides of a model without recursion.
+ *
+ * Reads the surface's copy of its culling information
+ * (msurface_t::cull*, see R_LoadSurfaceCullData()) instead of the surface
+ * data itself.
+ *
+ * @param[in] surf
+ * @param[in] shader
+ * @param[out] frontFace
+ * @return
+ */
+static qboolean R_CullSurface(msurface_t *surf, shader_t *shader, int *frontFace)
+{
+	// force to non-front facing
+	*frontFace = 0;
+
+	// allow culling to be disabled
+	if (r_noCull->integer)
+	{
+		return qfalse;
+	}
+
+	// made surface culling generic, inline with q3map2 surface classification
+	switch (surf->cullSurfaceType)
+	{
+	case SF_FACE:
+	case SF_TRIANGLES:
+		break;
+	case SF_GRID:
+		if (r_noCurves->integer)
+		{
+			return qtrue;
+		}
+		break;
+	case SF_FOLIAGE:
+		if (r_drawFoliage->value == 0.f)
+		{
+			return qtrue;
+		}
+		break;
+
+	default:
+		return qtrue;
+	}
+
+	// plane cull
+	if (surf->cullPlaneType != PLANE_NON_PLANAR && r_facePlaneCull->integer)
+	{
+		float d = DotProduct(tr.orientation.viewOrigin, surf->cullNormal) - surf->cullDist;
+
+		if (d > 0.0f)
+		{
+			*frontFace = 1;
+		}
+
+		// don't cull exactly on the plane, because there are levels of rounding
+		// through the BSP, ICD, and hardware that may cause pixel gaps if an
+		// epsilon isn't allowed here
+		if (shader->cullType == CT_FRONT_SIDED)
+		{
+			if (d < -8.0f)
+			{
+				tr.pc.c_plane_cull_out++;
+				return qtrue;
+			}
+		}
+		else if (shader->cullType == CT_BACK_SIDED)
+		{
+			if (d > 8.0f)
+			{
+				tr.pc.c_plane_cull_out++;
+				return qtrue;
+			}
+		}
+
+		tr.pc.c_plane_cull_in++;
+	}
+
+	{
+		int cull;
+
+		// try sphere cull
+		if (tr.currentEntityNum != ENTITYNUM_WORLD)
+		{
+			cull = R_CullLocalPointAndRadius(surf->cullOrigin, surf->cullRadius);
+		}
+		else
+		{
+			cull = R_CullPointAndRadius(surf->cullOrigin, surf->cullRadius);
+		}
+
+		if (cull == CULL_OUT)
+		{
+			tr.pc.c_sphere_cull_out++;
+			return qtrue;
+		}
+
+		tr.pc.c_sphere_cull_in++;
+	}
+
+	// must be visible
+	return qfalse;
+}
+
+/**
+ * @brief The given surface is going to be drawn, and it touches a leaf
+ * that is touched by one or more dlights, so try to throw out
+ * more dlights if possible.
+ *
+ * @param[in] surface
+ * @param[in] dlightBits
+ * @return
+ *
+ * @todo Made this use generic surface
+ */
+static int R_DlightSurface(msurface_t *surface, int dlightBits)
+{
+	int          i;
+	vec3_t       origin;
+	float        radius;
+	srfGeneric_t *gen;
+
+	// made surface dlighting generic, inline with q3map2 surface classification
+	switch ((surfaceType_t) *surface->data)
+	{
+	case SF_FACE:
+	case SF_TRIANGLES:
+	case SF_GRID:
+	case SF_FOLIAGE:
+		break;
+
+	default:
+		return 0;
+	}
+
+	// get generic surface
+	gen = (srfGeneric_t *) surface->data;
+
+	// debug code
+	// gen->dlightBits = dlightBits;
+	// return dlightBits;
+
+	// try to cull out dlights
+	for (i = 0; i < tr.refdef.num_dlights; i++)
+	{
+		if (!(dlightBits & (1 << i)))
+		{
+			continue;
+		}
+
+		// junior dlights don't affect world surfaces
+		if (tr.refdef.dlights[i].flags & REF_JUNIOR_DLIGHT)
+		{
+			dlightBits &= ~(1 << i);
+			continue;
+		}
+
+		// lightning dlights affect all surfaces
+		if (tr.refdef.dlights[i].flags & REF_DIRECTED_DLIGHT)
+		{
+			continue;
+		}
+
+		// test surface bounding sphere against dlight bounding sphere
+		VectorCopy(tr.refdef.dlights[i].transformed, origin);
+		radius = tr.refdef.dlights[i].radius;
+
+		if ((gen->origin[0] + gen->radius) < (origin[0] - radius) ||
+		    (gen->origin[0] - gen->radius) > (origin[0] + radius) ||
+		    (gen->origin[1] + gen->radius) < (origin[1] - radius) ||
+		    (gen->origin[1] - gen->radius) > (origin[1] + radius) ||
+		    (gen->origin[2] + gen->radius) < (origin[2] - radius) ||
+		    (gen->origin[2] - gen->radius) > (origin[2] + radius))
+		{
+			dlightBits &= ~(1 << i);
+		}
+	}
+
+	// Ren_Print("Surf: 0x%08X dlightBits: 0x%08X\n", srf, dlightBits );
+
+	// set counters
+	if (dlightBits == 0)
+	{
+		tr.pc.c_dlightSurfacesCulled++;
+	}
+	else
+	{
+		tr.pc.c_dlightSurfaces++;
+	}
+
+	// set surface dlight bits and return
+	gen->dlightBits = dlightBits;
+	return dlightBits;
+}
+
+/**
+ * @brief R_AddWorldSurface
+ * @param[in,out] surf
+ * @param[in] shader
+ * @param[in] dlightMap
+ * @param[in] decalBits
+ */
+static void R_AddWorldSurface(msurface_t *surf, shader_t *shader, int dlightMap, int decalBits)
+{
+	int frontFace;
+
+	if (surf->viewCount == tr.viewCount)
+	{
+		return;     // already in this view
+
+	}
+	surf->viewCount = tr.viewCount;
+	// FIXME: bmodel fog?
+
+	// try to cull before dlighting or adding
+	if (R_CullSurface(surf, shader, &frontFace))
+	{
+		return;
+	}
+
+	// check for dlighting
+	if (dlightMap)
+	{
+		dlightMap = R_DlightSurface(surf, dlightMap);
+		dlightMap = (dlightMap != 0);
+	}
+
+	// add decals
+	if (decalBits)
+	{
+		int i;
+
+		// project any decals
+		for (i = 0; i < tr.refdef.numDecalProjectors; i++)
+		{
+			if (decalBits & (1 << i))
+			{
+				R_ProjectDecalOntoSurface(&tr.refdef.decalProjectors[i], surf, tr.currentBModel);
+			}
+		}
+	}
+
+	R_AddDrawSurf(surf->data, shader, surf->fogIndex, frontFace, dlightMap);
+}
+
+/*
+=============================================================
+    BRUSH MODELS
+=============================================================
+*/
+
+/**
+ * @brief See if a sprite is inside a fog volume
+ *
+ * @param[in] re
+ * @param[in] bmodel
+ *
+ * @return Positive with /any part/ of the brush falling within a fog volume
+ *
+ * @note the original implementation of this function is a bit flaky...
+ */
+int R_BmodelFogNum(trRefEntity_t *re, bmodel_t *bmodel)
+{
+	int   i, j;
+	fog_t *fog;
+
+	for (i = 1; i < tr.world->numfogs; i++)
+	{
+		fog = &tr.world->fogs[i];
+		for (j = 0; j < 3; j++)
+		{
+			if (re->e.origin[j] + bmodel->bounds[0][j] >= fog->bounds[1][j])
+			{
+				break;
+			}
+			if (re->e.origin[j] + bmodel->bounds[1][j] <= fog->bounds[0][j])
+			{
+				break;
+			}
+		}
+		if (j == 3)
+		{
+			return i;
+		}
+	}
+
+	return 0;
+}
+
+/**
+ * @brief R_AddBrushModelSurfaces
+ * @param[in] ent
+ */
+void R_AddBrushModelSurfaces(trRefEntity_t *ent)
+{
+	int              i, fognum, decalBits;
+	vec3_t           mins, maxs;
+	model_t          *pModel;
+	bmodel_t         *bmodel;
+	int              savedNumDecalProjectors, numLocalProjectors;
+	decalProjector_t *savedDecalProjectors, localProjectors[MAX_DECAL_PROJECTORS];
+
+	pModel = R_GetModelByHandle(ent->e.hModel);
+
+	bmodel = pModel->model.bmodel;
+
+	if (R_CullLocalBox(bmodel->bounds) == CULL_OUT)
+	{
+		return;
+	}
+
+	// set current brush model to world
+	tr.currentBModel = bmodel;
+
+	// set model state for decals and dynamic fog
+	VectorCopy(ent->e.origin, bmodel->orientation.origin);
+	VectorCopy(ent->e.axis[0], bmodel->orientation.axis[0]);
+	VectorCopy(ent->e.axis[1], bmodel->orientation.axis[1]);
+	VectorCopy(ent->e.axis[2], bmodel->orientation.axis[2]);
+
+	R_DlightBmodel(bmodel);
+
+	// determine if in fog
+	fognum = R_BmodelFogNum(ent, bmodel);
+
+	// project any decals
+	decalBits          = 0;
+	numLocalProjectors = 0;
+	for (i = 0; i < tr.refdef.numDecalProjectors; i++)
+	{
+		// early out
+		if (tr.refdef.decalProjectors[i].shader == NULL)
+		{
+			continue;
+		}
+
+		// transform entity bbox (fixme: rotated entities have invalid bounding boxes)
+		VectorAdd(bmodel->bounds[0], tr.orientation.origin, mins);
+		VectorAdd(bmodel->bounds[1], tr.orientation.origin, maxs);
+
+		// set bit
+		if (R_TestDecalBoundingBox(&tr.refdef.decalProjectors[i], mins, maxs))
+		{
+			R_TransformDecalProjector(&tr.refdef.decalProjectors[i], tr.orientation.axis, tr.orientation.origin, &localProjectors[numLocalProjectors]);
+			numLocalProjectors++;
+			decalBits <<= 1;
+			decalBits  |= 1;
+		}
+	}
+
+	// save old decal projectors
+	savedNumDecalProjectors = tr.refdef.numDecalProjectors;
+	savedDecalProjectors    = tr.refdef.decalProjectors;
+
+	// set local decal projectors
+	tr.refdef.numDecalProjectors = numLocalProjectors;
+	tr.refdef.decalProjectors    = localProjectors;
+
+	// add model surfaces
+	for (i = 0; i < bmodel->numSurfaces; i++)
+	{
+		(bmodel->firstSurface + i)->fogIndex = fognum;
+		// custom shader support for brushmodels
+		if (ent->e.customShader)
+		{
+			R_AddWorldSurface(bmodel->firstSurface + i, R_GetShaderByHandle(ent->e.customShader), tr.currentEntity->needDlights, decalBits);
+		}
+		else
+		{
+			R_AddWorldSurface(bmodel->firstSurface + i, (( msurface_t * )(bmodel->firstSurface + i))->shader, tr.currentEntity->needDlights, decalBits);
+		}
+	}
+
+	// restore old decal projectors
+	tr.refdef.numDecalProjectors = savedNumDecalProjectors;
+	tr.refdef.decalProjectors    = savedDecalProjectors;
+
+	// add decal surfaces
+	R_AddDecalSurfaces(bmodel);
+
+	// clear current brush model
+	tr.currentBModel = NULL;
+}
+
+/*
+=============================================================
+    WORLD MODEL
+=============================================================
+*/
+
+/*
+=============================================================
+    VULKAN GPU WORLD CULLING
+=============================================================
+
+Most world surfaces (R_VkSurfaceGpuCullable: static opaque triangle
+surfaces, in fog volumes too when no stage's colors depend on the fog)
+are culled on the GPU (world_cull.comp): the CPU walk below only marks
+the visible leaves and adds one draw surface per group (the GPU-culled
+surfaces of one shader and fog volume) found in them; the culling
+dispatch then tests each surface of a visible leaf like R_CullSurface()
+and writes the visible ones' indexes and the groups' indirect draw
+commands. The CPU still handles every other surface, and the GPU-culled
+ones in leaves touched by dlights or decal projectors: decals are
+projected as before, and a dlit surface is drawn by the CPU path in that
+view (its skip stamp keeps the GPU from drawing it too).
+*/
+
+static vkWorldGroup_t *vkGroups;
+static int            *vkGroupFirst;
+static int            vkNumGroups;
+static qboolean       vkFogGroups;     ///< some groups are fogged: their fog pass needs the merged world batch
+static vkCullView_t   vkCull;          ///< the current view's culling (tr.viewParms.vkCullView >= 0)
+static unsigned int   *vkLeafBits;     ///< vkCull.leafBits
+static unsigned int   *vkSurfLeafRange; ///< per GPU-culled surface: first entry in vkSurfLeaves, count
+static unsigned int   *vkSurfLeaves;    ///< the leaves of each GPU-culled surface
+
+/**
+ * @brief Vulkan: true if surfaces with this shader can be drawn from the
+ * GPU culling output: static (shader_t::vkStatic), opaque and depth-writing
+ * first stage, so the order of their triangles doesn't matter.
+ */
+static qboolean R_VkGroupShaderOk(const shader_t *shader)
+{
+	return (shader->vkStatic && shader->sort == SS_OPAQUE && !shader->polygonOffset && shader->stages[0] &&
+	        !(shader->stages[0]->stateBits & (GLS_SRCBLEND_BITS | GLS_DSTBLEND_BITS)) &&
+	        (shader->stages[0]->stateBits & GLS_DEPTHMASK_TRUE)) ? qtrue : qfalse;
+}
+
+/**
+ * @brief Vulkan: true if surfaces with this shader can be drawn from the GPU
+ * culling output inside a fog volume: no stage's colors are modulated by
+ * the fog (ComputeColors' adjustColorsForFog needs the tess vertices); the
+ * fog pass itself is drawn by VK_Draw3DStaticFog
+ */
+static qboolean R_VkFogShaderOk(const shader_t *shader)
+{
+	int i;
+
+	for (i = 0; i < MAX_SHADER_STAGES && shader->stages[i] && shader->stages[i]->active; i++)
+	{
+		if (shader->stages[i]->adjustColorsForFog != ACFF_NONE)
+		{
+			return qfalse;
+		}
+	}
+
+	return qtrue;
+}
+
+/**
+ * @brief Vulkan: true if a world surface is culled on the GPU
+ */
+static qboolean R_VkSurfaceGpuCullable(const msurface_t *surf)
+{
+	const srfTriangles_t *tri;
+
+	if (!surf->data || *surf->data != SF_TRIANGLES || !surf->shader || !R_VkGroupShaderOk(surf->shader) ||
+	    (surf->fogIndex && !R_VkFogShaderOk(surf->shader)))
+	{
+		return qfalse;
+	}
+
+	tri = (const srfTriangles_t *)surf->data;
+	return (tri->vkFirstVertex >= 0 && tri->numIndexes > 0) ? qtrue : qfalse;
+}
+
+/**
+ * @brief Vulkan, R_VkBuildWorldCull: the group of a surface's shader and fog
+ * volume, -1 if there is none yet
+ */
+static int R_VkSurfaceGroup(const int *shaderGroup, const int *groupNext, const int *groupFog, const msurface_t *surf)
+{
+	int g;
+
+	for (g = shaderGroup[surf->shader->index]; g >= 0 && groupFog[g] != surf->fogIndex; g = groupNext[g])
+	{
+	}
+
+	return g;
+}
+
+/**
+ * @brief Vulkan: builds the GPU world culling data of the loaded map: the
+ * GPU-culled surfaces with their leaves, groups and indexes (uploaded by
+ * VK_CreateWorldCull), and per leaf the GPU-culled marksurfaces, the other
+ * marksurfaces and the groups.
+ */
+void R_VkBuildWorldCull(void)
+{
+	world_t         *w = tr.world;
+	mnode_t         *node;
+	msurface_t      *surf;
+	vkCullSurface_t *surfs;
+	unsigned int    *surfLeaves, *indexes, *leafFill;
+	int             *shaderGroup, *groupNext, *groupFog;
+	int             i, j, k, numSurfs = 0, numSurfLeaves = 0, numIndexes = 0;
+
+	vkGroups        = NULL;
+	vkGroupFirst    = NULL;
+	vkNumGroups     = 0;
+	vkFogGroups     = qfalse;
+	vkSurfLeafRange = NULL;
+	vkSurfLeaves    = NULL;
+
+	for (i = 0, surf = w->surfaces; i < w->numsurfaces; i++, surf++)
+	{
+		surf->vkCullIndex = -1;
+	}
+
+	// groups per shader and fog volume: shaderGroup[shader] is the first,
+	// groupNext the next of the same shader
+	shaderGroup = ri.Z_Malloc(MAX_SHADERS * sizeof(int));
+	groupNext   = ri.Z_Malloc(w->numsurfaces * sizeof(int));
+	groupFog    = ri.Z_Malloc(w->numsurfaces * sizeof(int));
+	for (i = 0; i < MAX_SHADERS; i++)
+	{
+		shaderGroup[i] = -1;
+	}
+
+	// number the GPU-culled surfaces and groups, count leaves and indexes
+	for (i = 0, node = w->nodes; i < w->numnodes; i++, node++)
+	{
+		if (node->contents == CONTENTS_NODE)
+		{
+			continue;
+		}
+
+		for (j = 0; j < node->nummarksurfaces; j++)
+		{
+			surf = node->firstmarksurface[j];
+			if (!R_VkSurfaceGpuCullable(surf))
+			{
+				continue;
+			}
+
+			numSurfLeaves++;
+			if (surf->vkCullIndex < 0)
+			{
+				surf->vkCullIndex = numSurfs++;
+				numIndexes       += ((srfTriangles_t *)surf->data)->numIndexes;
+				if (R_VkSurfaceGroup(shaderGroup, groupNext, groupFog, surf) < 0)
+				{
+					groupFog[vkNumGroups]            = surf->fogIndex;
+					groupNext[vkNumGroups]           = shaderGroup[surf->shader->index];
+					shaderGroup[surf->shader->index] = vkNumGroups++;
+				}
+			}
+		}
+	}
+
+	if (!numSurfs)
+	{
+		ri.Free(groupFog);
+		ri.Free(groupNext);
+		ri.Free(shaderGroup);
+		return;
+	}
+
+	vkGroups     = ri.Hunk_Alloc(vkNumGroups * sizeof(*vkGroups), h_low);
+	vkGroupFirst = ri.Hunk_Alloc(vkNumGroups * sizeof(*vkGroupFirst), h_low);
+	surfs        = ri.Z_Malloc(numSurfs * sizeof(*surfs));
+	surfLeaves   = ri.Z_Malloc(numSurfLeaves * sizeof(*surfLeaves));
+	indexes      = ri.Z_Malloc(numIndexes * sizeof(*indexes));
+	leafFill     = ri.Z_Malloc(numSurfs * sizeof(*leafFill));
+	Com_Memset(surfs, 0, numSurfs * sizeof(*surfs));
+
+	for (i = 0; i < vkNumGroups; i++)
+	{
+		vkGroups[i].surfaceType = SF_VK_WORLDGROUP;
+		vkGroups[i].index       = i;
+		vkGroups[i].viewCount   = -1;
+		vkGroups[i].fogIndex    = groupFog[i];
+		if (groupFog[i])
+		{
+			vkFogGroups = qtrue;
+		}
+	}
+
+	// surfaces: culling data, group, indexes; groups: size
+	for (i = 0, surf = w->surfaces; i < w->numsurfaces; i++, surf++)
+	{
+		vkCullSurface_t *cs;
+		vkWorldGroup_t  *g;
+		srfTriangles_t  *tri;
+
+		if (surf->vkCullIndex < 0)
+		{
+			continue;
+		}
+
+		cs  = &surfs[surf->vkCullIndex];
+		g   = &vkGroups[R_VkSurfaceGroup(shaderGroup, groupNext, groupFog, surf)];
+		tri = (srfTriangles_t *)surf->data;
+
+		g->shader      = surf->shader;
+		g->numIndexes += tri->numIndexes;
+
+		VectorCopy(surf->cullOrigin, cs->sphere);
+		cs->sphere[3] = surf->cullRadius;
+		VectorCopy(surf->cullNormal, cs->plane);
+		cs->plane[3]   = surf->cullDist;
+		cs->numIndexes = tri->numIndexes;
+		cs->group      = g->index;
+		cs->cullMode   = 0;
+		if (surf->cullPlaneType != PLANE_NON_PLANAR)
+		{
+			cs->cullMode = (surf->shader->cullType == CT_FRONT_SIDED) ? 1 : (surf->shader->cullType == CT_BACK_SIDED) ? 2 : 0;
+		}
+	}
+
+	// index data in surface order, group regions in group order
+	for (i = 0, surf = w->surfaces, k = 0; i < w->numsurfaces; i++, surf++)
+	{
+		srfTriangles_t *tri;
+
+		if (surf->vkCullIndex < 0)
+		{
+			continue;
+		}
+
+		tri                                 = (srfTriangles_t *)surf->data;
+		surfs[surf->vkCullIndex].firstIndex = k;
+		for (j = 0; j < tri->numIndexes; j++)
+		{
+			indexes[k++] = tri->vkFirstVertex + tri->indexes[j];
+		}
+	}
+	for (i = 0, k = 0; i < vkNumGroups; i++)
+	{
+		vkGroups[i].firstIndex = k;
+		vkGroupFirst[i]        = k;
+		k                     += vkGroups[i].numIndexes;
+	}
+
+	// surface leaf lists: count, then fill
+	for (i = 0, node = w->nodes; i < w->numnodes; i++, node++)
+	{
+		if (node->contents == CONTENTS_NODE)
+		{
+			continue;
+		}
+		for (j = 0; j < node->nummarksurfaces; j++)
+		{
+			surf = node->firstmarksurface[j];
+			if (surf->vkCullIndex >= 0 && R_VkSurfaceGpuCullable(surf))
+			{
+				surfs[surf->vkCullIndex].leafCount++;
+			}
+		}
+	}
+	for (i = 0, k = 0; i < numSurfs; i++)
+	{
+		surfs[i].leafFirst = k;
+		leafFill[i]        = k;
+		k                 += surfs[i].leafCount;
+	}
+
+	// per leaf: GPU-culled marks, the other marks, groups
+	for (i = 0, node = w->nodes; i < w->numnodes; i++, node++)
+	{
+		int numGpu = 0, numCpu = 0, numGroups = 0;
+
+		node->vkGpuMarks    = node->vkCpuMarks = NULL;
+		node->vkGroups      = NULL;
+		node->numVkGpuMarks = node->numVkCpuMarks = node->numVkGroups = 0;
+
+		if (node->contents == CONTENTS_NODE || node->nummarksurfaces <= 0)
+		{
+			continue;
+		}
+
+		for (j = 0; j < node->nummarksurfaces; j++)
+		{
+			if (R_VkSurfaceGpuCullable(node->firstmarksurface[j]))
+			{
+				numGpu++;
+			}
+			else
+			{
+				numCpu++;
+			}
+		}
+
+		if (numGpu)
+		{
+			node->vkGpuMarks = ri.Hunk_Alloc(numGpu * sizeof(msurface_t *), h_low);
+			node->vkGroups   = ri.Hunk_Alloc(numGpu * sizeof(int), h_low);
+		}
+		if (numCpu)
+		{
+			node->vkCpuMarks = ri.Hunk_Alloc(numCpu * sizeof(msurface_t *), h_low);
+		}
+
+		for (j = 0; j < node->nummarksurfaces; j++)
+		{
+			surf = node->firstmarksurface[j];
+			if (R_VkSurfaceGpuCullable(surf))
+			{
+				int g = R_VkSurfaceGroup(shaderGroup, groupNext, groupFog, surf);
+
+				node->vkGpuMarks[node->numVkGpuMarks++]   = surf;
+				surfLeaves[leafFill[surf->vkCullIndex]++] = (unsigned int)i;
+
+				for (k = 0; k < numGroups && node->vkGroups[k] != g; k++)
+				{
+				}
+				if (k == numGroups)
+				{
+					node->vkGroups[numGroups++] = g;
+				}
+			}
+			else
+			{
+				node->vkCpuMarks[node->numVkCpuMarks++] = surf;
+			}
+		}
+		node->numVkGroups = numGroups;
+	}
+
+	if (!VK_CreateWorldCull(surfs, numSurfs, surfLeaves, numSurfLeaves, indexes, numIndexes, w->numnodes, vkNumGroups))
+	{
+		vkNumGroups = 0; // the CPU walks the whole world
+	}
+	else
+	{
+		vkLeafBits = ri.Hunk_Alloc(VK_CullLeafWords() * sizeof(unsigned int), h_low);
+
+		// the surfaces' leaves on the CPU too: a decal on a GPU-culled surface
+		// is drawn when one of them is visible (R_VkSurfaceInVisibleLeaf)
+		vkSurfLeafRange = ri.Hunk_Alloc(MAX(numSurfs, 1) * 2 * sizeof(unsigned int), h_low);
+		vkSurfLeaves    = ri.Hunk_Alloc(MAX(numSurfLeaves, 1) * sizeof(unsigned int), h_low);
+		for (i = 0; i < numSurfs; i++)
+		{
+			vkSurfLeafRange[2 * i]     = surfs[i].leafFirst;
+			vkSurfLeafRange[2 * i + 1] = surfs[i].leafCount;
+		}
+		Com_Memcpy(vkSurfLeaves, surfLeaves, numSurfLeaves * sizeof(unsigned int));
+	}
+
+	ri.Free(leafFill);
+	ri.Free(indexes);
+	ri.Free(surfLeaves);
+	ri.Free(surfs);
+	ri.Free(groupFog);
+	ri.Free(groupNext);
+	ri.Free(shaderGroup);
+}
+
+/**
+ * @brief Vulkan: starts GPU world culling for the current view, unless a
+ * debug view needs every surface on the CPU or a remapped group shader
+ * can't be drawn from the culling output
+ */
+static qboolean R_VkCullBeginView(void)
+{
+	int i;
+
+	// fogged groups' fog pass only exists in the merged world batch
+	if (!vkNumGroups || !r_vkGpuCull->integer || !r_vkStaticWorld->integer || (vkFogGroups && !VK_WorldBatchOn()) ||
+	    r_showTris->integer || r_showNormals->integer || r_debugShaderSurfaceFlags->integer)
+	{
+		return qfalse;
+	}
+
+	for (i = 0; i < vkNumGroups; i++)
+	{
+		if (vkGroups[i].shader->remappedShader &&
+		    (!R_VkGroupShaderOk(vkGroups[i].shader->remappedShader) ||
+		     (vkGroups[i].fogIndex && !R_VkFogShaderOk(vkGroups[i].shader->remappedShader))))
+		{
+			return qfalse;
+		}
+	}
+
+	vkCull.leafBits = vkLeafBits;
+	return VK_CullBeginView(&vkCull, vkGroupFirst);
+}
+
+/**
+ * @brief Vulkan: true if this GPU-culled world surface is in a leaf the
+ * current view's walk reached (vkCull.leafBits). The CPU walk doesn't visit
+ * GPU-culled surfaces, so their viewCount isn't set; renderer1 sets it for
+ * every surface in a visited leaf, which is what R_AddDecalSurface() tests.
+ */
+qboolean R_VkSurfaceInVisibleLeaf(const msurface_t *surf)
+{
+	unsigned int i, first, count, leaf;
+
+	if (tr.viewParms.vkCullView < 0 || !vkSurfLeaves || surf->vkCullIndex < 0)
+	{
+		return qfalse;
+	}
+
+	first = vkSurfLeafRange[2 * surf->vkCullIndex];
+	count = vkSurfLeafRange[2 * surf->vkCullIndex + 1];
+	for (i = 0; i < count; i++)
+	{
+		leaf = vkSurfLeaves[first + i];
+		if (vkCull.leafBits[leaf >> 5] & (1u << (leaf & 31)))
+		{
+			return qtrue;
+		}
+	}
+
+	return qfalse;
+}
+
+/**
+ * @brief Vulkan: R_AddWorldSurface() for a GPU-culled surface in a leaf
+ * touched by dlights or decal projectors: projects the decals, and draws
+ * the surface on the CPU path in this view if it is dlit.
+ */
+static void R_AddGpuCulledSurface(msurface_t *surf, int dlightBits, int decalBits)
+{
+	int frontFace, i;
+
+	if (surf->viewCount == tr.viewCount)
+	{
+		return;
+	}
+	surf->viewCount = tr.viewCount;
+
+	if (R_CullSurface(surf, surf->shader, &frontFace))
+	{
+		return;
+	}
+
+	if (dlightBits)
+	{
+		dlightBits = R_DlightSurface(surf, dlightBits);
+	}
+
+	for (i = 0; decalBits && i < tr.refdef.numDecalProjectors; i++)
+	{
+		if (decalBits & (1 << i))
+		{
+			R_ProjectDecalOntoSurface(&tr.refdef.decalProjectors[i], surf, tr.currentBModel);
+		}
+	}
+
+	if (dlightBits)
+	{
+		vkCull.skip[surf->vkCullIndex] = vkCull.stamp;
+		R_AddDrawSurf(surf->data, surf->shader, surf->fogIndex, frontFace, 1);
+	}
+}
+
+/**
+ * @brief Adds a leaf's drawsurfaces
+ * @param[in] node
+ * @param[in] dlightBits
+ * @param[in] decalBits
+ */
+static void R_AddLeafSurfaces(mnode_t *node, int dlightBits, int decalBits)
+{
+	int        c;
+	msurface_t *surf, **mark;
+
+	// add to count
+	tr.pc.c_leafs++;
+
+	// add to z buffer bounds
+	if (node->mins[0] < tr.viewParms.visBounds[0][0])
+	{
+		tr.viewParms.visBounds[0][0] = node->mins[0];
+	}
+	if (node->mins[1] < tr.viewParms.visBounds[0][1])
+	{
+		tr.viewParms.visBounds[0][1] = node->mins[1];
+	}
+	if (node->mins[2] < tr.viewParms.visBounds[0][2])
+	{
+		tr.viewParms.visBounds[0][2] = node->mins[2];
+	}
+
+	if (node->maxs[0] > tr.viewParms.visBounds[1][0])
+	{
+		tr.viewParms.visBounds[1][0] = node->maxs[0];
+	}
+	if (node->maxs[1] > tr.viewParms.visBounds[1][1])
+	{
+		tr.viewParms.visBounds[1][1] = node->maxs[1];
+	}
+	if (node->maxs[2] > tr.viewParms.visBounds[1][2])
+	{
+		tr.viewParms.visBounds[1][2] = node->maxs[2];
+	}
+
+	if (tr.viewParms.vkCullView >= 0)
+	{
+		int leaf = (int)(node - tr.world->nodes);
+
+		vkCull.leafBits[leaf >> 5] |= 1u << (leaf & 31);
+
+		for (c = 0; c < node->numVkGroups; c++)
+		{
+			vkWorldGroup_t *g = &vkGroups[node->vkGroups[c]];
+
+			if (g->viewCount != tr.viewCount)
+			{
+				g->viewCount = tr.viewCount;
+				R_AddDrawSurf((surfaceType_t *)g, g->shader, g->fogIndex, 0, 0);
+			}
+		}
+
+		for (c = 0; c < node->numVkCpuMarks; c++)
+		{
+			surf = node->vkCpuMarks[c];
+			R_AddWorldSurface(surf, surf->shader, dlightBits, decalBits);
+		}
+
+		if (dlightBits || decalBits)
+		{
+			for (c = 0; c < node->numVkGpuMarks; c++)
+			{
+				R_AddGpuCulledSurface(node->vkGpuMarks[c], dlightBits, decalBits);
+			}
+		}
+		return;
+	}
+
+	// add the individual surfaces
+	mark = node->firstmarksurface;
+	c    = node->nummarksurfaces;
+	while (c--)
+	{
+		// the surface may have already been added if it
+		// spans multiple leafs
+		surf = *mark;
+		R_AddWorldSurface(surf, surf->shader, dlightBits, decalBits);
+		mark++;
+	}
+}
+
+/**
+ * @brief R_RecursiveWorldNode
+ * @param[in] node
+ * @param[in] planeBits
+ * @param[in] dlightBits
+ * @param[in] decalBits
+ */
+static void R_RecursiveWorldNode(mnode_t *node, int planeBits, int dlightBits, int decalBits)
+{
+	int      i, r;
+	dlight_t *dl;
+
+	do
+	{
+		// if the node wasn't marked as potentially visible, exit
+		if (node->visframe != tr.visCount)
+		{
+			return;
+		}
+
+		// if the bounding volume is outside the frustum, nothing
+		// inside can be visible OPTIMIZE: don't do this all the way to leafs?
+
+		if (!r_noCull->integer)
+		{
+			if (planeBits & 1)
+			{
+				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[0]);
+				if (r == 2)
+				{
+					return;                     // culled
+				}
+				if (r == 1)
+				{
+					planeBits &= ~1;            // all descendants will also be in front
+				}
+			}
+
+			if (planeBits & 2)
+			{
+				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[1]);
+				if (r == 2)
+				{
+					return;                     // culled
+				}
+				if (r == 1)
+				{
+					planeBits &= ~2;            // all descendants will also be in front
+				}
+			}
+
+			if (planeBits & 4)
+			{
+				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[2]);
+				if (r == 2)
+				{
+					return;                     // culled
+				}
+				if (r == 1)
+				{
+					planeBits &= ~4;            // all descendants will also be in front
+				}
+			}
+
+			if (planeBits & 8)
+			{
+				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[3]);
+				if (r == 2)
+				{
+					return;                     // culled
+				}
+				if (r == 1)
+				{
+					planeBits &= ~8;            // all descendants will also be in front
+				}
+			}
+
+			// farplane culling
+			if (planeBits & 16)
+			{
+				r = BoxOnPlaneSide(node->mins, node->maxs, &tr.viewParms.frustum[4]);
+				if (r == 2)
+				{
+					return;                     // culled
+				}
+				if (r == 1)
+				{
+					planeBits &= ~8;            // all descendants will also be in front
+				}
+			}
+
+		}
+
+		// cull dlights
+		if (dlightBits)      //%    && node->contents != -1 )
+		{
+			for (i = 0; i < tr.refdef.num_dlights; i++)
+			{
+				if (dlightBits & (1 << i))
+				{
+					// directional dlights don't get culled
+					if (tr.refdef.dlights[i].flags & REF_DIRECTED_DLIGHT)
+					{
+						continue;
+					}
+
+					// test dlight bounds against node surface bounds
+					dl = &tr.refdef.dlights[i];
+					if (node->surfMins[0] >= (dl->origin[0] + dl->radius) || node->surfMaxs[0] <= (dl->origin[0] - dl->radius) ||
+					    node->surfMins[1] >= (dl->origin[1] + dl->radius) || node->surfMaxs[1] <= (dl->origin[1] - dl->radius) ||
+					    node->surfMins[2] >= (dl->origin[2] + dl->radius) || node->surfMaxs[2] <= (dl->origin[2] - dl->radius))
+					{
+						dlightBits &= ~(1 << i);
+					}
+				}
+			}
+		}
+
+		// cull decals
+		if (decalBits)
+		{
+			for (i = 0; i < tr.refdef.numDecalProjectors; i++)
+			{
+				if (decalBits & (1 << i))
+				{
+					// test decal bounds against node surface bounds
+					if (tr.refdef.decalProjectors[i].shader == NULL ||
+					    !R_TestDecalBoundingBox(&tr.refdef.decalProjectors[i], node->surfMins, node->surfMaxs))
+					{
+						decalBits &= ~(1 << i);
+					}
+				}
+			}
+		}
+
+		// handle leaf nodes
+		if (node->contents != -1)
+		{
+			break;
+		}
+
+		// recurse down the children, front side first
+		R_RecursiveWorldNode(node->children[0], planeBits, dlightBits, decalBits);
+
+		// tail recurse
+		node = node->children[1];
+	}
+	while (1);
+
+	// short circuit
+	if (node->nummarksurfaces == 0)
+	{
+		return;
+	}
+
+	// moved off to separate function
+	R_AddLeafSurfaces(node, dlightBits, decalBits);
+}
+
+/**
+ * @brief R_PointInLeaf
+ * @param[in] p
+ * @return
+ */
+static mnode_t *R_PointInLeaf(const vec3_t p)
+{
+	mnode_t  *node;
+	float    d;
+	cplane_t *plane;
+
+	if (!tr.world)
+	{
+		Ren_Drop("R_PointInLeaf: bad model");
+	}
+
+	node = tr.world->nodes;
+	while (1)
+	{
+		if (node->contents != -1)
+		{
+			break;
+		}
+		plane = node->plane;
+		d     = DotProduct(p, plane->normal) - plane->dist;
+		if (d > 0)
+		{
+			node = node->children[0];
+		}
+		else
+		{
+			node = node->children[1];
+		}
+	}
+
+	return node;
+}
+
+/**
+ * @brief R_ClusterPVS
+ * @param[in] cluster
+ * @return
+ */
+static const byte *R_ClusterPVS(int cluster)
+{
+	if (!tr.world)
+	{
+		Ren_Drop("R_ClusterPVS: bad model");
+	}
+
+	if (!tr.world->vis || cluster < 0 || cluster >= tr.world->numClusters)
+	{
+		return tr.world->novis;
+	}
+
+	return tr.world->vis + cluster * tr.world->clusterBytes;
+}
+
+// R_inPVS point cache: cgame asks every frame about the same few hundred
+// fixed points (misc models, coronas, speakers, spawn points) from the same
+// view origin, each a full BSP descent. A point's cluster never changes for
+// a loaded world, so this caches cluster per exact point (bitwise compare).
+#define PVS_CACHE_SIZE  1024 // power of two
+#define PVS_CACHE_PROBE 8
+
+typedef struct
+{
+	unsigned int point[3]; // the point's float bits
+	int cluster;
+	qboolean used;
+} pvsCacheEntry_t;
+
+static pvsCacheEntry_t pvsCache[PVS_CACHE_SIZE];
+static pvsCacheEntry_t pvsLastP1; // the view origin: one per frame, kept out of the table
+
+/**
+ * @brief Empties the R_inPVS point cache (a new world was loaded).
+ */
+void R_ClearPVSCache(void)
+{
+	Com_Memset(pvsCache, 0, sizeof(pvsCache));
+	Com_Memset(&pvsLastP1, 0, sizeof(pvsLastP1));
+}
+
+/**
+ * @brief R_PointInLeaf(p)->cluster through the R_inPVS point cache.
+ */
+static int R_PointClusterCached(const vec3_t p)
+{
+	unsigned int    bits[3], h;
+	pvsCacheEntry_t *e;
+	int             i;
+
+	Com_Memcpy(bits, p, sizeof(bits));
+	h  = (bits[0] * 73856093u) ^ (bits[1] * 19349663u) ^ (bits[2] * 83492791u);
+	h ^= h >> 15;
+
+	for (i = 0; i < PVS_CACHE_PROBE; i++)
+	{
+		e = &pvsCache[(h + i) & (PVS_CACHE_SIZE - 1)];
+		if (!e->used)
+		{
+			break;
+		}
+		if (e->point[0] == bits[0] && e->point[1] == bits[1] && e->point[2] == bits[2])
+		{
+			return e->cluster;
+		}
+	}
+
+	// miss: take the first free slot, or replace the home slot when the
+	// probe range is full (moving points, e.g. player origins)
+	if (i == PVS_CACHE_PROBE)
+	{
+		e = &pvsCache[h & (PVS_CACHE_SIZE - 1)];
+	}
+	e->point[0] = bits[0];
+	e->point[1] = bits[1];
+	e->point[2] = bits[2];
+	e->cluster  = R_PointInLeaf(p)->cluster;
+	e->used     = qtrue;
+
+	return e->cluster;
+}
+
+/**
+ * @brief R_inPVS
+ * @param[in] p1
+ * @param[in] p2
+ * @return
+ */
+qboolean R_inPVS(const vec3_t p1, const vec3_t p2)
+{
+	const byte   *vis;
+	unsigned int bits[3];
+	int          cluster;
+
+	Com_Memcpy(bits, p1, sizeof(bits));
+	if (!pvsLastP1.used || pvsLastP1.point[0] != bits[0] || pvsLastP1.point[1] != bits[1] || pvsLastP1.point[2] != bits[2])
+	{
+		pvsLastP1.point[0] = bits[0];
+		pvsLastP1.point[1] = bits[1];
+		pvsLastP1.point[2] = bits[2];
+		pvsLastP1.cluster  = R_PointInLeaf(p1)->cluster;
+		pvsLastP1.used     = qtrue;
+	}
+
+	vis     = R_ClusterPVS(pvsLastP1.cluster);
+	cluster = R_PointClusterCached(p2);
+
+	if (!(vis[cluster >> 3] & (1 << (cluster & 7))))
+	{
+		return qfalse;
+	}
+
+	return qtrue;
+}
+
+/**
+ * @brief Mark the leaves and nodes that are in the PVS for the current cluster
+ */
+static void R_MarkLeaves(void)
+{
+	const byte *vis;
+	mnode_t    *leaf, *parent;
+	int        i;
+	int        cluster;
+
+	// lockpvs lets designers walk around to determine the
+	// extent of the current pvs
+	if (r_lockPvs->integer)
+	{
+		return;
+	}
+
+	// current viewcluster
+	leaf    = R_PointInLeaf(tr.viewParms.pvsOrigin);
+	cluster = leaf->cluster;
+
+	// if the cluster is the same and the area visibility matrix
+	// hasn't changed, we don't need to mark everything again
+
+	// if r_showcluster was just turned on, remark everything
+	if (tr.viewCluster == cluster && !tr.refdef.areamaskModified
+	    && !r_showCluster->modified)
+	{
+		return;
+	}
+
+	if (r_showCluster->modified || r_showCluster->integer)
+	{
+		r_showCluster->modified = qfalse;
+		if (r_showCluster->integer)
+		{
+			Ren_Print("cluster:%i  area:%i\n", cluster, leaf->area);
+		}
+	}
+
+	tr.visCount++;
+	tr.viewCluster = cluster;
+
+	if (r_noVis->integer || tr.viewCluster == -1)
+	{
+		for (i = 0 ; i < tr.world->numnodes ; i++)
+		{
+			if (tr.world->nodes[i].contents != CONTENTS_SOLID)
+			{
+				tr.world->nodes[i].visframe = tr.visCount;
+			}
+		}
+		return;
+	}
+
+	vis = R_ClusterPVS(tr.viewCluster);
+
+	for (i = 0, leaf = tr.world->nodes ; i < tr.world->numnodes ; i++, leaf++)
+	{
+		cluster = leaf->cluster;
+		if (cluster < 0 || cluster >= tr.world->numClusters)
+		{
+			continue;
+		}
+
+		// check general pvs
+		if (!(vis[cluster >> 3] & (1 << (cluster & 7))))
+		{
+			continue;
+		}
+
+		// check for door connection
+		if ((tr.refdef.areamask[leaf->area >> 3] & (1 << (leaf->area & 7))))
+		{
+			continue;       // not visible
+		}
+
+		// don't want to walk the entire bsp to add skybox surfaces
+		if (tr.refdef.rdflags & RDF_SKYBOXPORTAL)
+		{
+			// this only happens once, as game/cgame know the origin of the skybox
+			// this also means the skybox portal cannot move, as this list is calculated once and never again
+			if (tr.world->numSkyNodes < WORLD_MAX_SKY_NODES)
+			{
+				tr.world->skyNodes[tr.world->numSkyNodes++] = leaf;
+			}
+			R_AddLeafSurfaces(leaf, 0, 0);
+			continue;
+		}
+
+		parent = leaf;
+		do
+		{
+			if (parent->visframe == tr.visCount)
+			{
+				break;
+			}
+			parent->visframe = tr.visCount;
+			parent           = parent->parent;
+		}
+		while (parent);
+	}
+}
+
+/**
+ * @brief R_AddWorldSurfaces
+ */
+void R_AddWorldSurfaces(void)
+{
+	if (!r_drawWorld->integer)
+	{
+		return;
+	}
+
+	if (tr.refdef.rdflags & RDF_NOWORLDMODEL)
+	{
+		return;
+	}
+
+	tr.currentEntityNum = ENTITYNUM_WORLD;
+	tr.shiftedEntityNum = tr.currentEntityNum << QSORT_ENTITYNUM_SHIFT;
+
+	// set current brush model to world
+	tr.currentBModel = &tr.world->bmodels[0];
+
+	// clear out the visible min/max
+	ClearBounds(tr.viewParms.visBounds[0], tr.viewParms.visBounds[1]);
+
+	tr.viewParms.vkCullView = R_VkCullBeginView() ? vkCull.view : -1;
+
+	// render sky or world?
+	if ((tr.refdef.rdflags & RDF_SKYBOXPORTAL) && tr.world->numSkyNodes > 0)
+	{
+		int     i;
+		mnode_t **node;
+
+		for (i = 0, node = tr.world->skyNodes; i < tr.world->numSkyNodes; i++, node++)
+			R_AddLeafSurfaces(*node, tr.refdef.dlightBits, 0);      // no decals on skybox nodes
+	}
+	else
+	{
+		// determine which leaves are in the PVS / areamask
+		R_MarkLeaves();
+
+		// perform frustum culling and add all the potentially visible surfaces
+		R_RecursiveWorldNode(tr.world->nodes, 255, tr.refdef.dlightBits, tr.refdef.decalBits);
+
+		// add decal surfaces
+		R_AddDecalSurfaces(tr.world->bmodels);
+	}
+
+	if (tr.viewParms.vkCullView >= 0)
+	{
+		VK_CullDispatch(&vkCull, tr.viewParms.frustum, tr.orientation.viewOrigin,
+		                (r_noCull->integer ? VK_CULL_NOCULL : 0) | (r_facePlaneCull->integer ? VK_CULL_FACEPLANE : 0));
+	}
+
+	// clear brush model
+	tr.currentBModel = NULL;
+}

@@ -1,0 +1,39 @@
+# 2024 Legacy team
+#
+# Starts the CI pipeline as a release: tags, the weekly snapshot and manual
+# runs merge the mod pk3, sign the Windows builds and publish everything.
+name: ETLBuild
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry:
+        description: Dry run. Publish nothing and send no failure notification, keep the packages and the server image as run artifacts instead.
+        type: boolean
+        default: false
+      disable-checks:
+        description: Skip the change, build artifact and compiler warning checks
+        type: boolean
+        default: false
+  schedule:
+    - cron: "0 0 * * FRI"
+
+jobs:
+  release:
+    # Only tags and master are ever published.
+    if: github.ref_type == 'tag' || github.ref == 'refs/heads/master'
+    # Allow the reusable pipeline to delete artifacts after publication.
+    permissions:
+      contents: read
+      actions: write
+    uses: ./.github/workflows/ci.yml
+    with:
+      release: true
+      # Tags and the schedule have no inputs, so they always publish and run
+      # every check.
+      dry: ${{ inputs.dry == true }}
+      disable-checks: ${{ inputs.disable-checks == true }}
+    secrets: inherit

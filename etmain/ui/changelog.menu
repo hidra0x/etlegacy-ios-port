@@ -1,0 +1,79 @@
+#include "ui/menudef.h"
+#include "ui/menumacros.h"
+
+// Defines //
+#define MENU_NAME	"changelog_popup"
+#define GROUP_NAME      "grpChangelogPopup"
+
+menuDef {
+	name        MENU_NAME
+	visible     0
+	fullscreen  0
+	rect        FULL_WINDOW_X FULL_WINDOW_Y FULL_WINDOW_WIDTH FULL_WINDOW_HEIGHT
+	style       WINDOW_STYLE_FILLED
+	popup
+	// Restore the previously focused menu on close so the main menu music
+	// does not restart when returning from the changelog browser.
+	modal
+
+	fadeClamp   0.5
+	fadeAmount  0.075
+
+	onOpen {
+		// Refresh file list every time the popup opens so VFS changes are reflected.
+		setitemcolor background backcolor 0 0 0 0 ;
+		fadein background ;
+		uiScript ChangelogInit
+	}
+
+	onEsc {
+		conditionalscript ui_changelog_ingame 0
+			( "close " MENU_NAME "; open ingame_main" )
+			( "close " MENU_NAME )
+	}
+
+// Background //
+	itemDef {
+		name        "background"
+		rect        0 0 FULL_WINDOW_WIDTH FULL_WINDOW_HEIGHT
+		style       WINDOW_STYLE_FILLED
+		background  "ui/assets/fadebox.tga"
+		backcolor   0 0 0 0
+		visible     1
+		decoration
+	}
+
+// Changelog tab //
+#define SUBFULL_WINDOW_WIDTH     560
+#define SUBFULL_WINDOW_HEIGHT    420
+#define SUBFULL_WINDOW_X         .5*(FULL_WINDOW_WIDTH-SUBFULL_WINDOW_WIDTH)
+#define SUBFULL_WINDOW_Y         .5*(FULL_WINDOW_HEIGHT-SUBFULL_WINDOW_HEIGHT)
+
+	SUBWINDOWBLACK( SUBFULL_WINDOW_X, SUBFULL_WINDOW_Y, SUBFULL_WINDOW_WIDTH, SUBFULL_WINDOW_HEIGHT, _("") )
+
+	// Dynamic popup title (CHANGELOG - filename) populated by UI_ChangelogInit/Load.
+	CVARLABEL( SUBFULL_WINDOW_X+5, SUBFULL_WINDOW_Y+2, SUBFULL_WINDOW_WIDTH-10, 12, "ui_changelog_title", .19, ITEM_ALIGN_LEFT, 0, 10 )
+
+	itemDef {
+		name            "changelogContent"
+		group           GROUP_NAME
+		rect            $evalfloat((SUBFULL_WINDOW_X)+8) $evalfloat((SUBFULL_WINDOW_Y)+24) $evalfloat((SUBFULL_WINDOW_WIDTH)-20) $evalfloat((SUBFULL_WINDOW_HEIGHT)-24-30)
+		type            ITEM_TYPE_LISTBOX
+		textfont        UI_FONT_COURBD_21
+		textstyle       ITEM_TEXTSTYLE_SHADOWED
+		textscale       .2
+		textaligny      -3
+		forecolor       .6 .6 .6 1
+		feeder          FEEDER_CHANGELOG
+		elementtype     LISTBOX_TEXT
+		elementwidth    540
+		elementheight   10
+		columns         1 0 540 0
+		visible         1
+		notselectable
+	}
+
+	BUTTON( (SUBFULL_WINDOW_X)+8, (SUBFULL_WINDOW_Y)+(SUBFULL_WINDOW_HEIGHT)-24, .333*((SUBFULL_WINDOW_WIDTH)-22), 18, _("MSGID_MENU_BACK"), .3, 14, conditionalscript ui_changelog_ingame 0 ( "close " MENU_NAME "; open ingame_main" ) ( "close " MENU_NAME ) )
+	BUTTONEXT( (SUBFULL_WINDOW_X)+8+.333*((SUBFULL_WINDOW_WIDTH)-22)+3, (SUBFULL_WINDOW_Y)+(SUBFULL_WINDOW_HEIGHT)-24, .333*((SUBFULL_WINDOW_WIDTH)-22), 18, _("MSGID_MENU_CHANGELOG_NEWER"), .3, 14, uiScript ChangelogNext, cvarTest "ui_changelog_has_prev" disableCvar { 0 } )
+	BUTTONEXT( (SUBFULL_WINDOW_X)+8+2*.333*((SUBFULL_WINDOW_WIDTH)-22)+6, (SUBFULL_WINDOW_Y)+(SUBFULL_WINDOW_HEIGHT)-24, .334*((SUBFULL_WINDOW_WIDTH)-22), 18, _("MSGID_MENU_CHANGELOG_OLDER"), .3, 14, uiScript ChangelogPrevious, cvarTest "ui_changelog_has_next" disableCvar { 0 } )
+}

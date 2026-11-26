@@ -1,0 +1,150 @@
+#include "ui/menudef.h"
+#include "ui/menumacros.h"
+
+// Defines //
+#define MENU_NAME	"profile_create_initial"
+#define GROUP_NAME	"grpProfileCreateInitial"
+
+// Create Profile Menu //
+#define INITIAL_PROFILEDEFAULT_SETTINGS     uiScript systemCvarsGet ;               \
+	uiScript profileCvarsGet ;              \
+	setcvar  ui_glCustom 1 ;                 \
+	setcvar  ui_sensitivity 5 ;              \
+	setcvar  ui_profile_mousePitch 0 ;       \
+	setcvar  ui_handedness 0 ;               \
+	setcvar  ui_rate 25000 ;                 \
+	uiScript glCustom                       \
+
+// Opener //
+    menuDef {
+	name        "profile_create_initial_opener"
+	visible     0
+	fullscreen  0
+	rect FULL_WINDOW_X FULL_WINDOW_Y FULL_WINDOW_WIDTH FULL_WINDOW_HEIGHT
+
+	onOpen {
+		INITIAL_PROFILEDEFAULT_SETTINGS ;
+
+		open  MENU_NAME ;
+		close profile_create_initial_opener ;
+
+		conditionalscript com_recommendedSet 0
+		("clearfocus")
+		    ("abort")
+
+		conditionalscript com_recommended 3
+		("setcvar ui_glPreset 0 ; uiScript update ui_glPreset")
+		    ("copycvar com_recommended ui_glPreset ; uiScript update ui_glPreset") "-1"
+	}
+}
+
+menuDef {
+	name        MENU_NAME
+	visible     0
+	fullscreen  0
+	rect FULL_WINDOW_X FULL_WINDOW_Y FULL_WINDOW_WIDTH FULL_WINDOW_HEIGHT
+	style WINDOW_STYLE_FILLED
+	popup
+
+	fadeClamp   0.5
+
+	onOpen {
+		setEditFocus "efleftProfile Name:" ;
+
+		conditionalscript ui_profile_create_error 1
+		("clearcvar ui_profile_create_error ; abort")
+		    ("clearfocus")
+
+		setitemcolor background backcolor 0 0 0 0 ;
+		fadein background ;
+		setEditFocus "efleftProfile Name:"
+	}
+
+
+// Background //
+
+
+// Subwindows //
+#define SUBFULL_WINDOW_WIDTH     354
+#define SUBFULL_WINDOW_HEIGHT    364
+#define SUBFULL_WINDOW_X         .5 * (FULL_WINDOW_WIDTH - SUBFULL_WINDOW_WIDTH)
+#define SUBFULL_WINDOW_Y         .5 * (FULL_WINDOW_HEIGHT - SUBFULL_WINDOW_HEIGHT)
+
+	SUBWINDOWBLACK(SUBFULL_WINDOW_X, SUBFULL_WINDOW_Y, SUBFULL_WINDOW_WIDTH, SUBFULL_WINDOW_HEIGHT, _("CREATE PROFILE"))
+
+	itemDef {
+		name        "logo"
+		rect        $evalfloat(.5 *(FULL_WINDOW_WIDTH - 150) - 1) $evalfloat(70) 150 75
+		style       WINDOW_STYLE_SHADER
+		background  "ui/assets/etl_logo"
+		forecolor   1 1 1 1
+		visible     1
+		decoration
+	}
+
+	LABEL(6, SUBFULL_WINDOW_Y + 94, .7 * (FULL_WINDOW_WIDTH - 24), 10, _("^1CHOOSE YOUR INITIAL SETTINGS"), .2, ITEM_ALIGN_CENTER, .5 * (FULL_WINDOW_WIDTH - 24), 8)
+
+	// TODO: use FEEDER_LANGUAGES to automatically show available localizations
+#ifndef ETLEGACY
+	COMBO(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 122, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Language:"), .2, 8, "ui_cl_lang", LEGACY_LANGUAGES, none, _("Set your desired language"))
+#endif
+
+	itemDef {
+		name        "efleftbackPlayer Alias:"
+		group GROUP_NAME
+		rect        $evalfloat((SUBFULL_WINDOW_X + 4 + 32) + 80 + 6) $evalfloat(SUBFULL_WINDOW_Y + 146) $evalfloat((SUBFULL_WINDOW_WIDTH)-8 - 64 - 80 - 6) $evalfloat(10)
+		style WINDOW_STYLE_FILLED
+		backcolor   .5 .5 .5 .2
+		visible     1
+		decoration
+	}
+	EDITFIELDLEFT(SUBFULL_WINDOW_X + 4 + 32, SUBFULL_WINDOW_Y + 146, (SUBFULL_WINDOW_WIDTH)-8 - 64, 10, _("Player Alias:"), .2, 8, "ui_profile", 36, 23, _("Enter the alias here that you would like displayed to others on servers"))
+
+	MULTIACTION(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 170, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Quality Preset:"), .2, 8, "ui_glPreset", cvarFloatList { "Very Low" 3 "Low" 2 "Normal" 1 "High" 0 }, uiScript update "ui_glPreset", _("Select your initial video quality settings, these can be changed later via the options menu"))
+#ifdef ETLEGACY
+	COMBO(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 184, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Resolution:"), .2, 8, "ui_r_mode", LEGACY_RESOLUTIONS, uiScript glCustom, _("Choose your preferred video resolution, if unsure leave it as the default"))
+	COMBO(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 198, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Display Mode:"), .2, 8, "ui_r_windowmode", LEGACY_WINDOWMODES, uiScript glCustom, _("Set your preferred display mode"))
+#else
+	MULTI(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 184, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Resolution:"), .2, 8, "ui_r_mode", VANILLA_RESOLUTIONS,  _("Choose your preferred video resolution"))
+	MULTI(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 198, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Display Mode:"), .2, 8, "ui_r_fullscreen", VANILLA_WINDOWMODES,  _("Set your preferred display mode"))
+#endif
+
+	CVARFLOATLABEL(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 222, (SUBFULL_WINDOW_WIDTH)-8, 10, "ui_sensitivity", .2, ITEM_ALIGN_RIGHT, $evalfloat((SUBFULL_WINDOW_WIDTH)-8), 8)
+	SLIDER(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 222, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Mouse Sensitivity:"), .2, 8, "ui_sensitivity" 5 1 30, _("Set your mouse sensitivity"))
+	YESNO(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 234, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Invert Mouse:"), .2, 8, "ui_profile_mousePitch", _("Choose invert mouse if you prefer flight-simulator style mouse pitch controls"))
+
+	MULTI(SUBFULL_WINDOW_X + 4, SUBFULL_WINDOW_Y + 246, (SUBFULL_WINDOW_WIDTH)-8, 10, _("Handedness:"), .2, 8, "ui_handedness", cvarFloatList { "Right" 0 "Left" 1 }, _("Left or Right Handed? Set your default controls\nwhich you can modify later via the options menu"))
+
+	BUTTON((SUBFULL_WINDOW_X + 4) + .5 * ((SUBFULL_WINDOW_WIDTH)-174), SUBFULL_WINDOW_Y + 270, 174, 14, _("DEFAULT VIDEO SETTINGS"), .24, 11,
+	       conditionalscript com_recommendedSet 0
+	       ("clearfocus")
+	           ("abort")
+
+	       conditionalscript com_recommended 3
+	       ("setcvar ui_glPreset 0 ; uiScript update ui_glPreset")
+	           ("copycvar com_recommended ui_glPreset ; uiScript update ui_glPreset") "-1")
+
+	LABEL(6, SUBFULL_WINDOW_Y + 304, .7 * (FULL_WINDOW_WIDTH - 24), 10, _("^1LET'S KEEP ET ALIVE!"), .2, ITEM_ALIGN_CENTER, .5 * (FULL_WINDOW_WIDTH - 24), 8)
+	LABEL(6, SUBFULL_WINDOW_Y + 316, .7 * (FULL_WINDOW_WIDTH - 24), 10, _("Thank you for installing ET: Legacy"), .2, ITEM_ALIGN_CENTER, .5 * (FULL_WINDOW_WIDTH - 24), 8)
+
+	BUTTON(SUBFULL_WINDOW_X + 6, SUBFULL_WINDOW_Y + SUBFULL_WINDOW_HEIGHT - 24, .5 * (SUBFULL_WINDOW_WIDTH - 18), 18, _("QUIT"), .3, 14, close MENU_NAME ; close main ; open credits_quit)
+	BUTTON(SUBFULL_WINDOW_X + 6 + .5 * (SUBFULL_WINDOW_WIDTH - 18) + 6, SUBFULL_WINDOW_Y + SUBFULL_WINDOW_HEIGHT - 24, .5 * (SUBFULL_WINDOW_WIDTH - 18), 18, _("CREATE"), .3, 14,
+	       conditionalscript UIProfileValidName 2
+	       ("clearFocus")
+	           ("setcvar ui_profile_create_error \\\"Can't create profile. Please enter a valid player alias.\\\" ; open profile_create_error ; abort")
+	       conditionalscript UIProfileAlreadyExists 2
+	       ("setcvar ui_profile_create_error \\\"Can't create profile. A profile with the same name already exists.\\\" ; open profile_create_error ; abort")
+	           ("clearFocus")
+
+	       close MENU_NAME ;
+	       uiScript createProfile ;
+	       uiScript vidSave ;
+	       uiScript setDefaultProfile ;
+	       uiScript applyProfile ;
+	       execwolfconfig 1 ;
+	       uiScript systemCvarsApply ;
+	       uiScript profileCvarsApply ;
+	       setcvar ui_showtooltips 1 ;
+	       uiScript loadCachedServers ;
+	       exec vid_restart ; )
+}

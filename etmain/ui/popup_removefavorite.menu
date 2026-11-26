@@ -1,0 +1,53 @@
+#include "ui/menudef.h"
+#include "ui/menumacros.h"
+
+// Defines //
+#define GROUP_NAME	"grpPopupRemoveFavorite"
+
+// Add Favorite Menu //
+menuDef {
+	name		"popupRemoveFavorite"
+	visible		0
+	fullscreen	0
+	rect		FULL_WINDOW_X FULL_WINDOW_Y FULL_WINDOW_WIDTH FULL_WINDOW_HEIGHT
+	style		WINDOW_STYLE_FILLED
+	popup
+
+	fadeClamp	0.5
+	fadeAmount  0.075
+
+	onOpen {
+		setitemcolor background backcolor 0 0 0 0 ;
+		fadein background
+	}
+
+	onESC {
+		close popupRemoveFavorite ;
+		open ingame_main
+	}
+
+// Background //
+	itemDef {
+		name		"background"
+		rect		0 0 FULL_WINDOW_WIDTH 480
+		style		WINDOW_STYLE_FILLED
+		background	"ui/assets/fadebox.tga"
+		backcolor	0 0 0 0
+		visible		1
+		decoration
+	}
+
+// Subwindows //
+#define SUBFULL_WINDOW_WIDTH		250
+#define SUBFULL_WINDOW_HEIGHT	80
+#define SUBFULL_WINDOW_X			.5*(FULL_WINDOW_WIDTH-SUBFULL_WINDOW_WIDTH)
+#define SUBFULL_WINDOW_Y			.5*(FULL_WINDOW_HEIGHT-SUBFULL_WINDOW_HEIGHT)
+
+	SUBWINDOWBLACK( SUBFULL_WINDOW_X, SUBFULL_WINDOW_Y, SUBFULL_WINDOW_WIDTH, SUBFULL_WINDOW_HEIGHT, _("REMOVE FAVORITE") )
+	LABEL( SUBFULL_WINDOW_X+2, SUBFULL_WINDOW_Y+16, (SUBFULL_WINDOW_WIDTH)-4, 10, _("Remove this server from your favorites?"), .2, ITEM_ALIGN_CENTER, .5*((SUBFULL_WINDOW_WIDTH)-4), 8 )
+	// note: this isn't set for listen servers
+	CVARLABEL( SUBFULL_WINDOW_X+2, SUBFULL_WINDOW_Y+34, (SUBFULL_WINDOW_WIDTH)-4, 10, "cl_currentServerIP", .2, ITEM_ALIGN_CENTER, .5*((SUBFULL_WINDOW_WIDTH)-4), 8 )
+
+	BUTTON( SUBFULL_WINDOW_X+6, SUBFULL_WINDOW_Y+SUBFULL_WINDOW_HEIGHT-24, .5*(SUBFULL_WINDOW_WIDTH-18), 18, _("MSGID_MENU_YES"), .3, 14, uiScript removeFavoriteIngame ; close popupRemoveFavorite ; open ingame_main )
+	BUTTON( SUBFULL_WINDOW_X+6+.5*(SUBFULL_WINDOW_WIDTH-18)+6, SUBFULL_WINDOW_Y+SUBFULL_WINDOW_HEIGHT-24, .5*(SUBFULL_WINDOW_WIDTH-18), 18, _("MSGID_MENU_NO"), .3, 14, close popupRemoveFavorite ; open ingame_main )
+}

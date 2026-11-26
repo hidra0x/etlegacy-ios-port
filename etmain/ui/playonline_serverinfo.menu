@@ -1,0 +1,76 @@
+#include "ui/menudef.h"
+#include "ui/menumacros.h"
+
+// Defines //
+#define MENU_NAME	"playonline_serverinfo"
+#define GROUP_NAME	"grpPlayOnlineServerInfo"
+
+// Server Info Menu //
+menuDef {
+	name		MENU_NAME
+	visible		0
+	fullscreen	0
+	rect		FULL_WINDOW_X FULL_WINDOW_Y FULL_WINDOW_WIDTH FULL_WINDOW_HEIGHT
+	style		WINDOW_STYLE_FILLED
+	popup
+
+	fadeClamp	0.5
+	fadeAmount	0.075
+
+	onOpen {
+		setitemcolor background backcolor 0 0 0 0 ;
+		fadein background ;
+		setcvar ui_serverBrowser 1 ;
+		uiScript ServerStatus
+	}
+
+	onESC {
+		close MENU_NAME ;
+		open playonline
+	}
+
+// Background //
+	itemDef {
+		name		"background"
+		rect		0 0 FULL_WINDOW_WIDTH 480
+		style		WINDOW_STYLE_FILLED
+		background	"ui/assets/fadebox.tga"
+		backcolor	0 0 0 0
+		visible		1
+		decoration
+	}
+
+// Subwindows //
+#define SUBFULL_WINDOW_WIDTH		450
+#define SUBFULL_WINDOW_HEIGHT	320
+#define SUBFULL_WINDOW_X			.5*(FULL_WINDOW_WIDTH-SUBFULL_WINDOW_WIDTH)
+#define SUBFULL_WINDOW_Y			.5*(FULL_WINDOW_HEIGHT-SUBFULL_WINDOW_HEIGHT)
+
+	SUBWINDOWBLACK( SUBFULL_WINDOW_X, SUBFULL_WINDOW_Y, SUBFULL_WINDOW_WIDTH, SUBFULL_WINDOW_HEIGHT, _("SERVER INFO") )
+
+	itemDef {
+		name			"serverInfo"
+		group			GROUP_NAME
+		rect			 $evalfloat((SUBFULL_WINDOW_X)+6)  $evalfloat((SUBFULL_WINDOW_Y)+20)  $evalfloat((SUBFULL_WINDOW_WIDTH)-12)  $evalfloat((SUBFULL_WINDOW_HEIGHT)-20-26)
+		type			ITEM_TYPE_LISTBOX
+		textfont		UI_FONT_COURBD_21
+		textstyle		ITEM_TEXTSTYLE_SHADOWED
+		textscale		.2
+		textaligny		-3
+		forecolor		.6 .6 .6 1
+		feeder			FEEDER_SERVERSTATUS
+		elementtype		LISTBOX_TEXT
+		elementwidth	$evalfloat((SUBFULL_WINDOW_WIDTH)-12)
+		elementheight	12
+		columns			4	0	40	20
+							40	40	10
+							90	40	10
+							135	40	44
+		visible			1
+		notselectable
+	}
+
+	BUTTON( (SUBFULL_WINDOW_X)+6, (SUBFULL_WINDOW_Y)+(SUBFULL_WINDOW_HEIGHT)-24, .33*((SUBFULL_WINDOW_WIDTH)-24), 18, _("MSGID_MENU_BACK"), .3, 14, close MENU_NAME ; open playonline )
+	BUTTON( (SUBFULL_WINDOW_X)+6+.33*((SUBFULL_WINDOW_WIDTH)-24)+6, (SUBFULL_WINDOW_Y)+(SUBFULL_WINDOW_HEIGHT)-24, .34*((SUBFULL_WINDOW_WIDTH)-24), 18, _("MSGID_MENU_PLAY_SERVER_INFO_REFRESH"), .3, 14, uiScript ServerStatus )
+	BUTTON( (SUBFULL_WINDOW_X)+6+.33*((SUBFULL_WINDOW_WIDTH)-24)+6+.34*((SUBFULL_WINDOW_WIDTH)-24)+6, (SUBFULL_WINDOW_Y)+(SUBFULL_WINDOW_HEIGHT)-24, .33*((SUBFULL_WINDOW_WIDTH)-24), 18, _("MSGID_MENU_PLAY_JOIN_SERVER"), .3, 14, uiScript JoinServer )
+}
